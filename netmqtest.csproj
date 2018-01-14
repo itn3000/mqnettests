@@ -5,6 +5,8 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="AMQPNetLite" Version="2.1.1" />
+    <PackageReference Include="Jil" Version="2.15.4" />
+    <PackageReference Include="MessagePack" Version="1.7.3.2" />
     <PackageReference Include="MQTTnet" Version="2.6.0" />
     <PackageReference Include="NetMQ">
       <Version>4.0.0.1</Version>

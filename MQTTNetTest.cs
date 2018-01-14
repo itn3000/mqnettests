@@ -9,6 +9,8 @@ namespace netmqtest
     using MQTTnet.Client;
     using MQTTnet.ManagedClient;
     using System.Net;
+    using MessagePack;
+    using System.Collections.Concurrent;
 
     class MQTTNetTestAdapter : MQTTnet.Adapter.IMqttServerAdapter
     {
@@ -24,8 +26,122 @@ namespace netmqtest
             throw new NotImplementedException();
         }
     }
+    [MessagePackObject]
+    public struct ReqMsg
+    {
+        public ReqMsg(string replyTopic, string body)
+        {
+            ReplyTopic = replyTopic;
+            Body = body;
+        }
+        [MessagePack.Key(0)]
+        public readonly string ReplyTopic;
+        [MessagePack.Key(1)]
+        public readonly string Body;
+    }
     class MQTTNetTest
     {
+        public static async Task ReqRepTest()
+        {
+            string requestTopic = "mytopic/A/request";
+            var sw = new System.Diagnostics.Stopwatch();
+            sw.Start();
+            using (var cts = new CancellationTokenSource())
+            using (var startedev = new ManualResetEventSlim())
+            using (var connectedev = new ManualResetEventSlim())
+            using (var recvev = new ManualResetEventSlim())
+            {
+                var fac = new MqttFactory();
+                await Task.WhenAll(
+                    Task.Run(async () =>
+                    {
+                        var svr = fac.CreateMqttServer();
+                        svr.ApplicationMessageReceived += async (sender, ev) =>
+                        {
+                            if (ev.ApplicationMessage.Topic.Equals(requestTopic, StringComparison.Ordinal))
+                            {
+                                var reqmsg = MessagePackSerializer.Deserialize<ReqMsg>(ev.ApplicationMessage.Payload);
+                                var msg = new MqttApplicationMessageBuilder().WithPayload("req").WithTopic(reqmsg.ReplyTopic).Build();
+                                await svr.PublishAsync(msg);
+                            }
+                        };
+                        svr.Started += (sender, ev) =>
+                        {
+                            startedev.Set();
+                        };
+                        var opt = new MqttServerOptionsBuilder()
+                            .WithDefaultEndpoint()
+                            .WithDefaultEndpointBoundIPAddress(IPAddress.Loopback)
+                            .WithDefaultEndpointPort(10012)
+                            .Build();
+                        await svr.StartAsync(opt).ConfigureAwait(false);
+                        cts.Token.WaitHandle.WaitOne();
+                        await svr.StopAsync().ConfigureAwait(false);
+                    })
+                    ,
+                    Task.Run(async () =>
+                    {
+                        var client = fac.CreateMqttClient();
+                        string replyTopic = "mytopic/A/reply";
+                        var queue = new ConcurrentQueue<TaskCompletionSource<byte[]>>();
+                        client.ApplicationMessageReceived += (sender, ev) =>
+                        {
+                            if (queue.TryDequeue(out var tcs))
+                            {
+                                tcs.TrySetResult(ev.ApplicationMessage.Payload);
+                            }
+                        };
+                        client.Connected += (sender, ev) =>
+                        {
+                            connectedev.Set();
+                        };
+                        var clientopt = new MqttClientOptionsBuilder()
+                            .WithClientId("clid")
+                            .WithTcpServer("localhost", 10012)
+                            .Build()
+                            ;
+                        await client.ConnectAsync(clientopt).ConfigureAwait(false);
+                        connectedev.Wait();
+                        var topicFilter = new TopicFilterBuilder()
+                            .WithTopic(replyTopic)
+                            .WithAtLeastOnceQoS()
+                            .Build()
+                            ;
+                        await client.SubscribeAsync(topicFilter).ConfigureAwait(false);
+                        Console.WriteLine($"client task loop started:{sw.Elapsed}");
+                        var beginTime = sw.Elapsed;
+                        const int LoopNum = 100000;
+                        for (int i = 0; i < LoopNum; i++)
+                        {
+                            var reqpayload = MessagePackSerializer.Serialize(new ReqMsg(replyTopic, "hoge"));
+                            var msg = new MqttApplicationMessageBuilder()
+                                .WithPayload(reqpayload)
+                                .WithTopic(requestTopic)
+                                .Build();
+                            ;
+                            var reqtcs = new TaskCompletionSource<byte[]>();
+                            queue.Enqueue(reqtcs);
+                            await client.PublishAsync(msg).ConfigureAwait(false);
+                            await reqtcs.Task;
+                        }
+                        var endTime = sw.Elapsed;
+                        Console.WriteLine($"client task loop done:{sw.Elapsed},rps={LoopNum/(endTime.Subtract(beginTime).TotalSeconds)}");
+                    }).ContinueWith(t =>
+                    {
+                        Console.WriteLine($"all client task done:{sw.Elapsed}");
+                        cts.Cancel();
+                        if (t.IsCanceled)
+                        {
+                            throw new TaskCanceledException("server task cancelled", t.Exception);
+                        }
+                        else if (t.IsFaulted)
+                        {
+                            throw new AggregateException(t.Exception);
+                        }
+                    })
+                ).ConfigureAwait(false);
+            }
+        }
         public static async Task TestMany(int loopNum, int taskNum)
         {
             var fac = new MqttFactory();

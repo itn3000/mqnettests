@@ -44,11 +44,8 @@ namespace netmqtest
                 sw.Start();
                 for (long i = 0; i < maxLoop && !ctoken.IsCancellationRequested; i++)
                 {
-                    lock (cl)
-                    {
-                        DoClientRequest(cl, idx, i);
-                    }
-                    await Task.Yield();
+                    DoClientRequest(cl, idx, i);
+                    // await Task.Yield();
                 }
                 Console.WriteLine($"client elapsed({idx}):{sw.Elapsed}");
             }
@@ -182,7 +179,7 @@ namespace netmqtest
             var port = 10005;
             long maxLoop = 100000;
             Console.WriteLine($"creating socket");
-            const int clientNum = 10;
+            const int clientNum = 1;
             using (var srv = new ResponseSocket($"@tcp://127.0.0.1:{port}"))
             using (var client = new RequestSocket($">tcp://127.0.0.1:{port}"))
             using (var csrc = new CancellationTokenSource())
@@ -197,7 +194,11 @@ namespace netmqtest
                 }),
                 Task.Run(async () =>
                 {
-                    await Task.WhenAll(Enumerable.Range(0, clientNum).Select(i => ClientWithSingleSocket(client, csrc.Token, i, maxLoop / clientNum))).ConfigureAwait(false);
+                    // await Task.WhenAll(Enumerable.Range(0, clientNum).Select(i => ClientWithSingleSocket(client, csrc.Token, i, maxLoop / clientNum))).ConfigureAwait(false);
+                    var beginTime = sw.Elapsed;
+                    await ClientWithSingleSocket(client, csrc.Token, 0, maxLoop / clientNum).ConfigureAwait(false);
+                    var endTime = sw.Elapsed;
+                    Console.WriteLine($"client done:{sw.Elapsed},rps={maxLoop / (endTime.Subtract(beginTime).TotalSeconds)}");
                     csrc.Cancel();
                 })
                 ).Wait();
@@ -210,6 +211,7 @@ namespace netmqtest
             // MQTTNetTest.TestMany(100, 100).Wait();
             // AMQPNetTest.TestMany().Wait();
             ReqRepTest();
+            // MQTTNetTest.ReqRepTest().Wait();
         }
     }
 }
