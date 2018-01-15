@@ -14,7 +14,7 @@ namespace netmqtest
             var ret = new RequestSocket($">tcp://127.0.0.1:{port}");
             return ret;
         }
-        static async Task ClientTask(int port, CancellationToken ctoken, int idx, long maxLoop)
+        static Task ClientTask(int port, CancellationToken ctoken, int idx, long maxLoop)
         {
             try
             {
@@ -25,16 +25,17 @@ namespace netmqtest
                     for (long i = 0; i < maxLoop && !ctoken.IsCancellationRequested; i++)
                     {
                         DoClientRequest(cl, idx, i);
-                        await Task.Yield();
+                        // await Task.Yield();
                     }
                 }
-                Console.WriteLine($"client elapsed({idx}):{sw.Elapsed}");
+                Console.WriteLine($"client elapsed({idx}):{sw.Elapsed},rps={maxLoop / sw.Elapsed.TotalSeconds}");
             }
             catch (Exception e)
             {
                 Console.WriteLine($"client exc:{e}");
 
             }
+            return Task.CompletedTask;
         }
         static async Task ClientWithSingleSocket(RequestSocket cl, CancellationToken ctoken, int idx, long maxLoop)
         {
@@ -45,9 +46,9 @@ namespace netmqtest
                 for (long i = 0; i < maxLoop && !ctoken.IsCancellationRequested; i++)
                 {
                     DoClientRequest(cl, idx, i);
-                    // await Task.Yield();
+                    await Task.Yield();
                 }
-                Console.WriteLine($"client elapsed({idx}):{sw.Elapsed}");
+                Console.WriteLine($"client elapsed({idx}):{sw.Elapsed},rps={maxLoop / sw.Elapsed.TotalSeconds}");
             }
             catch (Exception e)
             {
@@ -89,7 +90,6 @@ namespace netmqtest
         {
             return Task.Run(() =>
             {
-                long ret = 0;
                 using (var poller = new NetMQPoller())
                 using (ctoken.Register(() => poller.StopAsync()))
                 {
@@ -97,14 +97,14 @@ namespace netmqtest
                     {
                         var msg = e.Socket.ReceiveFrameBytes();
                         var recvvalue = bytestoi64(msg);
-                        while (true)
-                        {
-                            var old = Interlocked.CompareExchange(ref ret, ret + recvvalue, ret);
-                            if (old < ret)
-                            {
-                                break;
-                            }
-                        }
+                        // while (!ctoken.IsCancellationRequested)
+                        // {
+                        //     var old = Interlocked.CompareExchange(ref ret, ret + recvvalue, ret);
+                        //     if (old < ret)
+                        //     {
+                        //         break;
+                        //     }
+                        // }
                         // Console.WriteLine($"recv {msg}");
                         e.Socket.SendFrame("");
                         // e.Socket.SendFrame("OK", true);
@@ -113,16 +113,14 @@ namespace netmqtest
                     poller.Add(srv);
                     try
                     {
-                        Console.WriteLine($"polling start");
                         poller.Run();
-                        Console.WriteLine($"polling end");
                     }
                     catch (Exception e)
                     {
                         Console.WriteLine($"srv ex={e}");
                     }
                 }
-                return ret;
+                return 0L;
             });
         }
         static void ReqRepPattern()
@@ -172,12 +170,11 @@ namespace netmqtest
             sw.Stop();
             Console.WriteLine($"pubsub:{count}, {sw.Elapsed}, rps = {count * 1000 / sw.ElapsedMilliseconds}");
         }
-        static void ReqRepTest()
+        static void ReqRepTest(int LoopNum)
         {
             var sw = new System.Diagnostics.Stopwatch();
             sw.Start();
             var port = 10005;
-            long maxLoop = 100000;
             Console.WriteLine($"creating socket");
             const int clientNum = 1;
             using (var srv = new ResponseSocket($"@tcp://127.0.0.1:{port}"))
@@ -185,33 +182,29 @@ namespace netmqtest
             using (var csrc = new CancellationTokenSource())
             {
                 Console.WriteLine($"begin loop");
-                Task.WhenAll(ServerTask(srv, csrc.Token).ContinueWith((t) =>
-                {
-                    if (t.Status == TaskStatus.RanToCompletion)
-                    {
-                        Console.WriteLine($"total={t.Result}");
-                    }
-                }),
+                Task.WhenAll(ServerTask(srv, csrc.Token),
                 Task.Run(async () =>
                 {
                     // await Task.WhenAll(Enumerable.Range(0, clientNum).Select(i => ClientWithSingleSocket(client, csrc.Token, i, maxLoop / clientNum))).ConfigureAwait(false);
                     var beginTime = sw.Elapsed;
-                    await ClientWithSingleSocket(client, csrc.Token, 0, maxLoop / clientNum).ConfigureAwait(false);
+                    await ClientWithSingleSocket(client, csrc.Token, 0, LoopNum / clientNum).ConfigureAwait(false);
                     var endTime = sw.Elapsed;
-                    Console.WriteLine($"client done:{sw.Elapsed},rps={maxLoop / (endTime.Subtract(beginTime).TotalSeconds)}");
+                    Console.WriteLine($"client done(netmq):{sw.Elapsed},rps={LoopNum / (endTime.Subtract(beginTime).TotalSeconds)}");
                     csrc.Cancel();
                 })
                 ).Wait();
             }
             sw.Stop();
-            Console.WriteLine($"Hello World!:{sw.Elapsed},rps={maxLoop * 1000 / sw.ElapsedMilliseconds}");
+            Console.WriteLine($"elapsed(netmq):{sw.Elapsed},rps={LoopNum * 1000 / sw.ElapsedMilliseconds}");
         }
         static void Main(string[] args)
         {
             // MQTTNetTest.TestMany(100, 100).Wait();
             // AMQPNetTest.TestMany().Wait();
-            ReqRepTest();
-            // MQTTNetTest.ReqRepTest().Wait();
+            const int LoopNum = 300000;
+            ReqRepTest(LoopNum);
+            MQTTNetTest.ReqRepTest(LoopNum).Wait();
+            AMQPNetTest.ReqRepTest(LoopNum).Wait();
         }
     }
 }

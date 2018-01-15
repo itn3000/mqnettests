@@ -41,7 +41,7 @@ namespace netmqtest
     }
     class MQTTNetTest
     {
-        public static async Task ReqRepTest()
+        public static async Task ReqRepTest(int LoopNum)
         {
             string requestTopic = "mytopic/A/request";
             var sw = new System.Diagnostics.Stopwatch();
@@ -56,12 +56,13 @@ namespace netmqtest
                     Task.Run(async () =>
                     {
                         var svr = fac.CreateMqttServer();
+                        var msgbuilder = new MqttApplicationMessageBuilder().WithPayload("req");
                         svr.ApplicationMessageReceived += async (sender, ev) =>
                         {
                             if (ev.ApplicationMessage.Topic.Equals(requestTopic, StringComparison.Ordinal))
                             {
                                 var reqmsg = MessagePackSerializer.Deserialize<ReqMsg>(ev.ApplicationMessage.Payload);
-                                var msg = new MqttApplicationMessageBuilder().WithPayload("req").WithTopic(reqmsg.ReplyTopic).Build();
+                                var msg = msgbuilder.WithTopic(reqmsg.ReplyTopic).Build();
                                 await svr.PublishAsync(msg);
                             }
                         };
@@ -110,13 +111,12 @@ namespace netmqtest
                         await client.SubscribeAsync(topicFilter).ConfigureAwait(false);
                         Console.WriteLine($"client task loop started:{sw.Elapsed}");
                         var beginTime = sw.Elapsed;
-                        const int LoopNum = 100000;
+                        var msgbuilder = new MqttApplicationMessageBuilder().WithTopic(requestTopic);
                         for (int i = 0; i < LoopNum; i++)
                         {
                             var reqpayload = MessagePackSerializer.Serialize(new ReqMsg(replyTopic, "hoge"));
-                            var msg = new MqttApplicationMessageBuilder()
+                            var msg = msgbuilder
                                 .WithPayload(reqpayload)
-                                .WithTopic(requestTopic)
                                 .Build();
                             ;
                             var reqtcs = new TaskCompletionSource<byte[]>();
@@ -125,7 +125,7 @@ namespace netmqtest
                             await reqtcs.Task;
                         }
                         var endTime = sw.Elapsed;
-                        Console.WriteLine($"client task loop done:{sw.Elapsed},rps={LoopNum/(endTime.Subtract(beginTime).TotalSeconds)}");
+                        Console.WriteLine($"elapsed(mqtt):{sw.Elapsed},rps={LoopNum/(endTime.Subtract(beginTime).TotalSeconds)}");
                     }).ContinueWith(t =>
                     {
                         Console.WriteLine($"all client task done:{sw.Elapsed}");
